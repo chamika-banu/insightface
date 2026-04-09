@@ -1,0 +1,105 @@
+{
+  "info": {
+    "name": "InsightFace Face Verification",
+    "_postman_id": "insightface-service-v1",
+    "description": "Postman collection for the InsightFace Face Verification Service (Port 8002).\n\nSet the `base_url` collection variable to `http://localhost:8002` for local testing.\n\nRecommended order:\n1. GET /health\n2. POST /verify/face with matching selfie + ID\n3. POST /verify/face with non-matching selfie — expect face_mismatch",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "GET /health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/health",
+          "host": ["{{base_url}}"],
+          "path": ["health"]
+        },
+        "description": "Health check. Returns 200 when the buffalo_l model is loaded and the service is ready to accept requests."
+      },
+      "response": [
+        {
+          "name": "200 OK",
+          "status": "OK",
+          "code": 200,
+          "body": "{\n  \"status\": \"ok\",\n  \"model\": \"InsightFace buffalo_l (ArcFace w600k_r50)\",\n  \"device\": \"cpu\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "POST /verify/face",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "session_id",
+              "value": "{{session_id}}",
+              "type": "text",
+              "description": "UUID — passed through from NestJS for response correlation"
+            },
+            {
+              "key": "selfie_image",
+              "type": "file",
+              "src": "",
+              "description": "JPEG / PNG / WEBP selfie image of the guardian"
+            },
+            {
+              "key": "id_image",
+              "type": "file",
+              "src": "",
+              "description": "JPEG / PNG / WEBP ID document image (forwarded by NestJS from Redis)"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/verify/face",
+          "host": ["{{base_url}}"],
+          "path": ["verify", "face"]
+        },
+        "description": "Full face verification pipeline: detect faces in both images → compare ArcFace embeddings via cosine similarity (threshold 0.42).\n\nNestJS branches on `success` and `error.code` in the response."
+      },
+      "response": [
+        {
+          "name": "Match",
+          "status": "OK",
+          "code": 200,
+          "body": "{\n  \"success\": true,\n  \"data\": {\n    \"is_match\": true,\n    \"similarity_score\": 0.73,\n    \"confidence\": 0.96,\n    \"failure_reason\": null\n  },\n  \"error\": null\n}"
+        },
+        {
+          "name": "No Match — face_mismatch",
+          "status": "OK",
+          "code": 200,
+          "body": "{\n  \"success\": false,\n  \"data\": {\n    \"is_match\": false,\n    \"similarity_score\": 0.21,\n    \"confidence\": 0.88,\n    \"failure_reason\": \"face_mismatch\"\n  },\n  \"error\": {\n    \"code\": \"face_mismatch\",\n    \"message\": \"The selfie does not match the face on the provided ID document.\",\n    \"stage\": \"face_matching\"\n  }\n}"
+        },
+        {
+          "name": "No Match — face_not_detected_selfie",
+          "status": "OK",
+          "code": 200,
+          "body": "{\n  \"success\": false,\n  \"data\": {\n    \"is_match\": false,\n    \"similarity_score\": 0.0,\n    \"confidence\": 0.0,\n    \"failure_reason\": \"face_not_detected_selfie\"\n  },\n  \"error\": {\n    \"code\": \"face_not_detected_selfie\",\n    \"message\": \"No face detected in the selfie image.\",\n    \"stage\": \"face_detection_selfie\"\n  }\n}"
+        },
+        {
+          "name": "System Error",
+          "status": "Internal Server Error",
+          "code": 500,
+          "body": "{\n  \"success\": false,\n  \"data\": null,\n  \"error\": {\n    \"code\": \"inference_error\",\n    \"message\": \"Model inference failed unexpectedly. Check service logs.\",\n    \"stage\": \"face_detection_selfie\"\n  }\n}"
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8002",
+      "type": "string"
+    },
+    {
+      "key": "session_id",
+      "value": "test-session-001",
+      "type": "string"
+    }
+  ]
+}
