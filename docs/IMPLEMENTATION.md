@@ -57,19 +57,57 @@ insightface/
 ## Dependencies
 
 ```
+# InsightFace & Inference
 insightface==0.7.3
 onnxruntime-gpu>=1.19.2,<2.0
-opencv-python-headless>=4.9.0
+
+# Scientific stack
+# numpy must stay <2.0.0 due to compatibility with ONNX Runtime and InsightFace 0.7.3
 numpy>=1.26.4,<2.0
+scipy>=1.12.0,<1.13
+
+# Image processing
+opencv-python-headless>=4.9.0
 Pillow>=10.3.0
 pillow-heif>=0.16.0
-scipy>=1.12.0,<1.13
+
+# API layer
 fastapi>=0.111.0
 uvicorn>=0.31.1
 python-multipart>=0.0.9
 ```
 
 > `cmake` and `build-essential` are also required as system packages (installed in the Dockerfile) for compiling InsightFace's C extensions.
+
+---
+
+## Versioning & Compatibility
+
+InsightFace versioning is critical for production stability, particularly regarding **embedding stability**.
+
+### 1. Library Versioning
+The library version is pinned in `requirements.txt`:
+```text
+insightface==0.7.3
+```
+
+### 2. Model Pack Versioning
+The model pack is specified in `face_service.py`:
+```python
+self.app = FaceAnalysis(name="buffalo_l", providers=providers)
+```
+**To change packs**: Update the `name` parameter. Popular packs include:
+- `buffalo_l`: Large (Current), best accuracy.
+- `buffalo_s`: Small, faster inference, lower accuracy.
+- `antelopev2`: High-performance alternative.
+
+### 3. Critical: Embedding Compatibility
+> **Changing the library version or the model pack will likely change the resulting 512-d embeddings.**
+
+If you have stored face embeddings in a database (e.g., for "known users"):
+- **Existing embeddings will become invalid** if the model version changes.
+- A match score of `0.70` on version `0.7.3` might become `0.20` on a newer version.
+- **Migration Plan**: If you upgrade versions, you must re-process all source images to generate new embeddings for your database.
 
 ---
 
@@ -98,7 +136,7 @@ self.app = FaceAnalysis(
 self.app.prepare(ctx_id=0, det_size=(640, 640))
 ```
 
-The `buffalo_l` pack is downloaded from the InsightFace model hub on first run and cached to `/root/.insightface` (mounted as a named Docker volume so it survives rebuilds).
+The `buffalo_l` pack is **pre-baked** into the Docker image during the build process to ensure zero-delay startup and air-gap reliability.
 
 **What `buffalo_l` contains:**
 
@@ -261,3 +299,4 @@ These should be tuned based on real-world data before production deployment.
 Available at `http://localhost:8002/docs` when `ENABLE_SWAGGER=true`.
 
 ReDoc and the raw OpenAPI JSON schema (`/openapi.json`) are permanently disabled.
+

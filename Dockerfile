@@ -27,6 +27,9 @@ COPY requirements.txt .
 RUN python3 -m pip install --no-cache-dir --upgrade pip && \
     python3 -m pip install --no-cache-dir -r requirements.txt
 
+# Pre-download models to bake them into the image
+RUN python3 -c "from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_l').prepare(ctx_id=0, det_size=(640, 640))"
+
 # Copy service and application files
 COPY face_service.py .
 COPY main.py .

@@ -3,8 +3,6 @@ services:
     build: .
     ports:
       - "8002:8002"
-    volumes:
-      - insightface_cache:/root/.insightface
     environment:
       - PYTHONUNBUFFERED=1
       - ENABLE_SWAGGER=true
@@ -16,6 +14,3 @@ services:
               count: all
               capabilities: [gpu]
     command: python3 -m uvicorn main:app --host 0.0.0.0 --port 8002 --reload
-
-volumes:
-  insightface_cache:

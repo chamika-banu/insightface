@@ -14,7 +14,7 @@ The InsightFace service is a single Docker container:
 - **Base:** `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04` (GPU support)
 - **Port:** `8002` (internal), mapped to whatever port the load balancer or gateway exposes
 - **Process:** `python3 -m uvicorn main:app --host 0.0.0.0 --port 8002` (no `--reload`)
-- **Approximate image size:** ~2.5 GB (CUDA + ONNX Runtime + buffalo_l model pack)
+- **Approximate image size:** ~2.8 GB (CUDA + ONNX Runtime + pre-baked buffalo_l model pack)
 
 ---
 
@@ -25,7 +25,7 @@ The InsightFace service is a single Docker container:
 | `ENABLE_SWAGGER` | `true` | `false` |
 | `--reload` flag | enabled | **removed** |
 | Swagger UI (`/docs`) | enabled | **disabled** |
-| Model cache | Docker named volume | persistent volume / shared storage |
+| Model cache | **N/A (Pre-baked)** | **N/A (Pre-baked)** |
 | Logging | stdout (Docker) | stdout → log aggregator |
 
 ---
@@ -40,21 +40,12 @@ Set these in your hosting platform's environment/secrets configuration:
 
 ---
 
-## Model Cache
+The `buffalo_l` model pack (~330 MB) is **pre-baked** into the Docker image during the build process.
 
-The `buffalo_l` model pack (~300 MB) is downloaded from the InsightFace model hub on first startup and cached at `/root/.insightface`.
-
-**Options for production:**
-
-**Option A — Pre-bake weights into the image**
-
-Add a `RUN python3 -c "import onnxruntime as ort; from insightface.app import FaceAnalysis; app = FaceAnalysis(name='buffalo_l', providers=ort.get_available_providers()); app.prepare(ctx_id=0, det_size=(640, 640))"` step to the Dockerfile. The weights become part of the image layer. Increases image size by ~300 MB but eliminates download time on startup.
-
-**Option B — Persistent volume mount**
-
-Mount a persistent disk or network volume to `/root/.insightface`. The weights download on the first deployment and are reused on every subsequent restart or redeploy.
-
-> **Recommendation:** Option A is straightforward for InsightFace given the small model size (~300 MB). Option B adds flexibility if you want to swap the model pack without rebuilding the image.
+**Benefits:**
+- **Zero-delay startup**: The service is ready as soon as the container starts.
+- **Air-gap compatible**: No internet connection is required at runtime to download weights.
+- **Immutable**: The exact model weights are version-locked within the image.
 
 ---
 
@@ -134,7 +125,7 @@ These are approximate figures for CPU-only inference with InsightFace buffalo_l 
 | vCPU | 1 | 2 | Higher if running multiple workers |
 | RAM | 4 GB | 8 GB | Higher for multiple workers / large images |
 | Disk (image) | 3 GB | 5 GB | Includes base OS, CUDA libraries, and weights |
-| Network | outbound | — | For model download only |
+| Network | inbound | — | Internal API only; baked models eliminate hub download |
 
 **Inference time per request (CPU):**
 - RetinaFace detection (both images): 1–3 seconds
@@ -278,7 +269,7 @@ If `INSIGHTFACE_IMAGE` is not set, it falls back to `insightface:latest` (a loca
 - [ ] Swagger UI at `/docs` returns `404`
 - [ ] `/health` returns `200` after startup
 - [ ] InsightFace port (`8002`) is not reachable from the public internet
-- [ ] Model cache volume is persistent across container restarts
+- [x] Model weights are pre-baked into the Docker image
 - [ ] NestJS HTTP timeout for calls to this service is ≥ 30 seconds
 - [ ] Health check initial delay is ≥ 30 seconds
 - [ ] Logs are flowing to your log aggregator
