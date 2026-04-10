@@ -33,9 +33,9 @@ insightface/
 
 ## First-Time Build & Model Download
 
-When you build the service for the first time, or after clearing volumes, it will download the **InsightFace buffalo_l** model pack (~300MB).
+The service uses a **pre-baked** model strategy. The **InsightFace buffalo_l** model pack (~330MB) is downloaded and integrated into the image during the Docker build process.
 
-###  **Build the image**:
+### **Build the image**:
 
 ```bash
 make build
@@ -43,17 +43,7 @@ make build
 docker compose build
 ```
 
-###  **Initial Startup**:
-
-The first time you run the service, the model weights are downloaded from the InsightFace hub.
-
-```bash
-make serve
-# or:
-docker compose up
-```
-
-The weights are cached in a Docker named volume called `insightface_cache` (mounted to `/root/.insightface` inside the container). This ensuring that subsequent containers start instantly without re-downloading the model.
+> **Note**: This initial build will take longer than usual as it fetches the weight files. Once built, these weights are permanent within the image.
 
 ## Running the Service
 
@@ -64,6 +54,8 @@ make serve
 # or:
 docker compose up
 ```
+
+The service is ready for inference almost immediately upon startup, as there is no runtime download requirement.
 
 ### Rebuild and start (after changing requirements or Dockerfile)
 

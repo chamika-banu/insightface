@@ -34,9 +34,9 @@ The InsightFace service is a single Docker container:
 
 Set these in your hosting platform's environment/secrets configuration:
 
-| Variable | Production value | Notes |
+| Variable | Default | Notes |
 |---|---|---|
-| `ENABLE_SWAGGER` | `false` | Disables Swagger UI (`/docs`) |
+| `ENABLE_SWAGGER` | `true` | Set to `false` to disable Swagger UI (`/docs`) |
 
 ---
 

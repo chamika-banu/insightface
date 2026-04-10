@@ -36,9 +36,9 @@ Total peak: approximately 1.3–1.7 GB. A 2 GB RAM instance is technically achie
 
 - nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 base image: ~3.5 GB compressed, ~5 GB unpacked
 - Python packages (onnxruntime-gpu, insightface, opencv-python-headless, pillow-heif, scipy, fastapi, uvicorn): ~1.5 GB installed
-- buffalo_l model cache volume (`/root/.insightface`): ~330 MB downloaded at first run
+- buffalo_l model pack (pre-baked): ~330 MB integrated into the image
 - OS root filesystem + swap: ~2–3 GB
-- Total: ~10–11 GB. A 20 GB volume provides a safe minimum with room for log accumulation and OS updates.
+- Total: ~10–11 GB. A 20 GB volume provides a safe minimum with room for log accumulation and OS updates. Internet access is NOT required at runtime to fetch weights.
 
 ### GPU
 **Optional at minimum spec.** The service automatically falls back to `CPUExecutionProvider` if no CUDA device is found. CPU-only operation is slower (2–8 seconds per request at minimum spec) but fully functional.
@@ -88,7 +88,7 @@ Azure is the primary deployment target. All prices are Linux pay-as-you-go in **
 | Networking egress (estimated 10 GB/month at $0.087/GB after 5 GB free) | ~$0.44 |
 | **Shared monthly overhead** | **~$25** |
 
-The model cache is stored in a Docker volume backed by a managed disk. The service binary + base image fits comfortably in a 128 GB Premium SSD; a Standard HDD could drop this to ~$5/month but is not recommended in production due to IOPS sensitivity during container startup (model cache read at startup).
+The model weights are pre-baked into the Docker image. The service binary + base image fits comfortably in a 640 GB Premium SSD; a Standard HDD could drop this to ~$5/month but is not recommended in production due to IOPS sensitivity during container startup.
 
 ---
 
@@ -319,17 +319,13 @@ ResNet-50 ArcFace is a fast, lightweight model. The improvement from CPU to GPU 
 
 GPU becomes worth considering only if request throughput grows to the point where the CPU service is queuing requests for more than a few seconds — i.e., if multiple consent verifications are initiated concurrently. At the current service profile (internal NestJS backend calls, not direct user traffic), this threshold is unlikely to be reached.
 
-### Handling the model cache volume
+### Handling the model weights
 
-The buffalo_l model pack (~330 MB) is downloaded from the InsightFace model zoo on first container startup and written to `/root/.insightface`. This is a Docker named volume (`insightface_cache`) in the current compose configuration.
+The buffalo_l model pack (~330 MB) is baked directly into the Docker image. This follows the "Fat Container" strategy, treating model weights as immutable infrastructure.
 
-In production, treat the model cache as **infrastructure, not application data**:
+1. **Implemented: Bake the model into the Docker image.** The `buffalo_l` model weights are pre-downloaded at build time. This eliminates first-run download latency (20–40 seconds), removes any dependency on external model registries at runtime, and makes the model version deterministic.
 
-1. **Preferred: Bake the model into the Docker image.** Pre-download the model weights at build time using a multi-stage Dockerfile and copy them into `/root/.insightface`. This eliminates first-run download latency (20–40 seconds), removes the dependency on the InsightFace model zoo being reachable at startup, and makes the model version deterministic. The image grows by ~330 MB (from ~5 GB to ~5.3 GB), which is an acceptable tradeoff.
-
-2. **Alternative: Mount a persistent volume.** If baking the model into the image is not feasible (e.g., build environment cannot access the model zoo), use a managed persistent disk (Azure Managed Disk / AWS EBS / GCP Persistent Disk) mounted at startup. Ensure the volume is pre-populated before the first production deployment by running a model-pull container as a Kubernetes init container or a one-off ECS task.
-
-3. **Avoid relying on external download at runtime.** The InsightFace model zoo is not a CDN with uptime guarantees. A first-run download failure will cause the container to start in a broken state and require manual intervention.
+2. **No volumes required.** Since weights are baked into the image layers, no Docker volumes are needed for model caching or persistence.
 
 ### Cost optimisation strategies for ONNX Runtime inference services
 
