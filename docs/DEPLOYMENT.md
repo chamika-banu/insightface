@@ -149,34 +149,6 @@ InsightFace is stateless. Each request is fully independent — no sessions, no 
 
 ---
 
-## Logging
-
-The service writes structured logs to stdout. Route stdout to your platform's log aggregator.
-
-Log format:
-```
-YYYY-MM-DDTHH:MM:SS [LEVEL] insightface.verify — [verify/face] EVENT  key=value ...
-```
-
-**Key fields to index in your log aggregator:**
-
-| Field | Purpose |
-|---|---|
-| `session_id` | Correlate with NestJS and Florence-2 logs for a single verification flow |
-| `failure_reason` | Track rejection rates by type |
-| `similarity` | Monitor score distribution over time — drift may indicate model or image quality issues |
-| `confidence` | Reflects certainty of the match/non-match decision |
-| Log level `WARNING` | All verification rejections |
-| Log level `ERROR` | System failures — trigger alerts |
-
-**Recommended monitoring queries:**
-
-- `failure_reason = face_mismatch` rate: should reflect genuine mismatches
-- `failure_reason = face_not_detected_*` rate: high rate suggests image quality issues upstream
-- `similarity` score distribution: watch for unexpected shifts after NestJS or frontend changes that affect how images are captured or cropped
-
----
-
 ## GPU Prerequisites
 
 To use hardware acceleration in production:
@@ -196,19 +168,6 @@ If these prerequisites are not met, the service will dynamically detect their ab
 - **Embedding privacy:** ArcFace 512-d embeddings are computed in memory and discarded after each request. They are never logged or stored.
 - **Model weights:** Downloaded from the InsightFace model hub. Pin the model pack version (`buffalo_l`) in `face_service.py` and verify checksums if supply chain integrity is a requirement.
 - **Image format validation:** Consider adding file type validation (check magic bytes) in `main.py` before writing to temp if stricter input control is needed.
-
----
-
-## Similarity Threshold Calibration
-
-The current threshold is `SIMILARITY_THRESHOLD = 0.42` in `face_service.py`. This value should be calibrated against a real dataset before production:
-
-1. Collect a labelled dataset of matching and non-matching selfie/ID pairs
-2. Run all pairs through `/verify/face` and record `similarity_score`
-3. Plot an ROC curve across threshold values
-4. Select the threshold that gives an acceptable trade-off between false accept rate (FAR) and false reject rate (FRR) for the intended use case
-
-A threshold that is too low increases the risk of false accepts. A threshold that is too high increases user friction from false rejections.
 
 ---
 
@@ -262,16 +221,3 @@ If `INSIGHTFACE_IMAGE` is not set, it falls back to `insightface:latest` (a loca
 | uvicorn command | `--reload` | No reload, `--workers 1` |
 
 > If deploying to a managed container platform (ECS, GCP Cloud Run, Fly.io, etc.), the platform typically has its own service definition format. In that case, use the Dockerfile directly and configure env vars through the platform — `docker-compose.prod.yml` is optional in those environments.
-
----
-
-- [ ] `ENABLE_SWAGGER=false` is set in the production environment
-- [ ] Swagger UI at `/docs` returns `404`
-- [ ] `/health` returns `200` after startup
-- [ ] InsightFace port (`8002`) is not reachable from the public internet
-- [x] Model weights are pre-baked into the Docker image
-- [ ] NestJS HTTP timeout for calls to this service is ≥ 30 seconds
-- [ ] Health check initial delay is ≥ 30 seconds
-- [ ] Logs are flowing to your log aggregator
-- [ ] Alerts are configured for `ERROR` level log events
-- [ ] Similarity threshold has been calibrated against a real dataset before enabling production traffic
