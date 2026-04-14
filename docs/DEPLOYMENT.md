@@ -10,11 +10,28 @@ This guide covers deploying the InsightFace service to a production environment.
 
 The InsightFace service is a single Docker container:
 
-- **Image:** built from `insightface/Dockerfile`
-- **Base:** `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04` (GPU support)
+- **Image:** built from `insightface/Dockerfile` (CPU) or `insightface/Dockerfile.gpu` (GPU)
 - **Port:** `8002` (internal), mapped to whatever port the load balancer or gateway exposes
 - **Process:** `python3 -m uvicorn main:app --host 0.0.0.0 --port 8002` (no `--reload`)
-- **Approximate image size:** ~2.8 GB (CUDA + ONNX Runtime + pre-baked buffalo_l model pack)
+- **Approximate image size:**
+  - CPU image: ~1.5 GB
+  - GPU image: ~2.8 GB (CUDA + cuDNN + onnxruntime-gpu + pre-baked buffalo_l model pack)
+
+---
+
+## CPU vs GPU Deployment
+
+The service ships with two Dockerfiles that share the same application code and model weights.
+
+| | `Dockerfile` (CPU) | `Dockerfile.gpu` (GPU) |
+|---|---|---|
+| Base image | `python:3.11-slim` | `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04` |
+| ONNX Runtime | `onnxruntime` | `onnxruntime-gpu` |
+| Execution provider | `CPUExecutionProvider` | `CUDAExecutionProvider` + CPU fallback |
+| Host requirements | None | NVIDIA drivers + NVIDIA Container Toolkit |
+| Inference time | 2–5 seconds | < 1 second |
+
+`face_service.py` auto-detects available ONNX providers at startup and selects the best one — no code change is needed between CPU and GPU deployments.
 
 ---
 
@@ -49,24 +66,6 @@ The `buffalo_l` model pack (~330 MB) is **pre-baked** into the Docker image duri
 
 ---
 
-## Dockerfile — Production CMD
-
-The current `CMD` in the Dockerfile:
-
-```dockerfile
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8002"]
-```
-
-InsightFace with ONNX Runtime on CPU is significantly lighter than Florence-2. Multiple workers are feasible:
-
-```dockerfile
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8002", "--workers", "2"]
-```
-
-Each worker loads its own copy of the buffalo_l model pack into memory (~500 MB). Tune based on available RAM.
-
----
-
 ## Health Check
 
 Configure your hosting platform to poll:
@@ -75,7 +74,12 @@ Configure your hosting platform to poll:
 GET /health  →  HTTP 200
 ```
 
-Expected response (on GPU-enabled host):
+Expected response (CPU host):
+```json
+{"status": "ok", "model": "InsightFace buffalo_l (ArcFace w600k_r50)", "device": "CPUExecutionProvider"}
+```
+
+Expected response (GPU host):
 ```json
 {"status": "ok", "model": "InsightFace buffalo_l (ArcFace w600k_r50)", "device": "CUDAExecutionProvider"}
 ```
@@ -117,22 +121,19 @@ The InsightFace service should **not** be publicly accessible. It should only be
 
 ## Resource Requirements
 
-These are approximate figures for CPU-only inference with InsightFace buffalo_l (ONNX Runtime):
-
-| Resource | Minimum | Recommended | Notes |
+| Resource | Minimum (CPU) | Recommended (CPU) | GPU |
 |---|---|---|---|
-| GPU | Optional | NVIDIA T4 / L4 / A10G | Required for hardware acceleration |
-| vCPU | 1 | 2 | Higher if running multiple workers |
-| RAM | 4 GB | 8 GB | Higher for multiple workers / large images |
-| Disk (image) | 3 GB | 5 GB | Includes base OS, CUDA libraries, and weights |
-| Network | inbound | — | Internal API only; baked models eliminate hub download |
+| GPU | — | — | NVIDIA T4 / L4 / A10G |
+| vCPU | 1 | 2 | 2 |
+| RAM | 2 GB | 4 GB | 4 GB |
+| Disk (image) | 2 GB | 3 GB (CPU) | 5 GB (GPU) |
+| Network | inbound | — | — |
 
-**Inference time per request (CPU):**
-- RetinaFace detection (both images): 1–3 seconds
-- ArcFace embedding (both faces): 1–2 seconds
-- Total per `/verify/face` call: 2–5 seconds
+**Inference time per request:**
+- CPU: 2–5 seconds
+- GPU: < 1 second
 
-This is substantially faster than the Florence-2 service. NestJS HTTP timeout of 30 seconds is sufficient.
+NestJS HTTP timeout of 30 seconds is sufficient for either mode.
 
 ---
 
@@ -143,31 +144,27 @@ InsightFace is stateless. Each request is fully independent — no sessions, no 
 - Run multiple container instances behind a load balancer
 - Each instance holds its own copy of the model in memory (~500 MB per instance)
 - No session affinity required
-- No shared state between instances
-
-**Note:** The two-image upload in `/verify/face` means the same container processes both the selfie and the ID image within a single request. NestJS is responsible for fetching the ID image from Redis before calling this service — the service itself receives both images in the same multipart form.
 
 ---
 
 ## GPU Prerequisites
 
-To use hardware acceleration in production:
+To use GPU hardware acceleration in production:
 
-1.  **Host Drivers**: The host machine must have NVIDIA drivers installed.
-2.  **NVIDIA Container Toolkit**: The host must have the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed to expose GPUs to Docker.
-3.  **Docker Compose**: The service must be started with the `deploy.resources.reservations.devices` section (included in `docker-compose.prod.yml`).
+1. **Host Drivers**: The host machine must have NVIDIA drivers installed.
+2. **NVIDIA Container Toolkit**: Install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) to expose GPUs to Docker containers.
+3. **GPU compose overlay**: Use `docker-compose.gpu.yml` (dev) or `docker-compose.prod-gpu.yml` (prod) — see the Docker Compose section below.
+4. **GPU image**: Build from `Dockerfile.gpu` (done automatically by the GPU Makefile targets).
 
-If these prerequisites are not met, the service will dynamically detect their absence and fallback to **CPU-only** mode automatically.
+If these prerequisites are not met and the GPU image is accidentally used on a CPU host, `onnxruntime-gpu` will not find a CUDA execution provider and will silently fall back to `CPUExecutionProvider`. The service will still work correctly.
 
 ---
 
 ## Security Considerations
 
-- **No image storage:** Both uploaded images are written to temp files and deleted immediately in a `finally` block — images are never persisted beyond the duration of a single request.
-- **No authentication on the service itself:** Authentication and session validation are handled by NestJS. The InsightFace port should never be exposed to the public internet.
-- **Embedding privacy:** ArcFace 512-d embeddings are computed in memory and discarded after each request. They are never logged or stored.
-- **Model weights:** Downloaded from the InsightFace model hub. Pin the model pack version (`buffalo_l`) in `face_service.py` and verify checksums if supply chain integrity is a requirement.
-- **Image format validation:** Consider adding file type validation (check magic bytes) in `main.py` before writing to temp if stricter input control is needed.
+- **No image storage:** Both uploaded images are written to temp files and deleted immediately in a `finally` block.
+- **No authentication on the service itself:** Authentication is handled by NestJS. The InsightFace port should never be exposed to the public internet.
+- **Embedding privacy:** ArcFace 512-d embeddings are computed in memory and discarded after each request.
 
 ---
 
@@ -180,44 +177,64 @@ The buffalo_l model loads quickly (a few seconds), making rolling deploys straig
 3. Route traffic to the new instance
 4. Drain and terminate the old instance
 
-Any platform that supports health-check-gated traffic shifting will work correctly.
-
 ---
 
 ## Docker Compose
 
-The service ships with two Compose files:
+The service ships with four Compose files:
 
 | File | Purpose |
 |---|---|
-| `docker-compose.yml` | Development — builds locally, `--reload`, `ENABLE_SWAGGER=true` |
+| `docker-compose.yml` | Base / Dev — CPU, builds locally, `--reload`, `ENABLE_SWAGGER=true` |
+| `docker-compose.gpu.yml` | GPU overlay — switches build to `Dockerfile.gpu`, adds GPU device access |
 | `docker-compose.prod.yml` | Production override — registry image, no reload, `ENABLE_SWAGGER=false` |
+| `docker-compose.prod-gpu.yml` | GPU + Production overlay — adds GPU device access for GPU prod hosts |
 
-`docker-compose.prod.yml` is a **Compose override file** — it merges with the base file, only overriding the specified keys. Run them together:
+### CPU (default)
 
 ```bash
-# Using make:
-make serve-prod
+# Dev
+make serve
+# or:
+docker compose up
 
-# Or directly:
+# Prod
+export INSIGHTFACE_IMAGE=your-registry/insightface:latest
+make serve-prod
+# or:
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up
 ```
 
-Before running in production, set the registry image:
+### GPU
 
 ```bash
-export INSIGHTFACE_IMAGE=your-registry/insightface:latest
-make serve-prod
+# Dev (GPU)
+make serve-gpu
+# or:
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+
+# Prod (GPU)
+export INSIGHTFACE_IMAGE=your-registry/insightface:gpu-latest
+make serve-prod-gpu
+# or:
+docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.prod-gpu.yml up
 ```
 
-If `INSIGHTFACE_IMAGE` is not set, it falls back to `insightface:latest` (a locally built image).
+> If deploying to a managed container platform (ECS, GCP Cloud Run, Fly.io, etc.), the platform typically has its own service definition format. In that case, use the Dockerfile directly and configure env vars through the platform — the compose files are optional in those environments.
 
-**What the prod override changes vs. dev:**
+---
 
-| Setting | Dev (`docker-compose.yml`) | Prod (`docker-compose.prod.yml`) |
-|---|---|---|
-| Image source | `build: .` (local) | `image: $INSIGHTFACE_IMAGE` (registry) |
-| `ENABLE_SWAGGER` | `true` | `false` |
-| uvicorn command | `--reload` | No reload, `--workers 1` |
+## Makefile Reference
 
-> If deploying to a managed container platform (ECS, GCP Cloud Run, Fly.io, etc.), the platform typically has its own service definition format. In that case, use the Dockerfile directly and configure env vars through the platform — `docker-compose.prod.yml` is optional in those environments.
+| Target | Description |
+|---|---|
+| `make build` | Build the CPU image from `Dockerfile` |
+| `make build-gpu` | Build the GPU image from `Dockerfile.gpu` |
+| `make serve` | Start the service (CPU) |
+| `make serve-gpu` | Start the service (GPU) |
+| `make serve-build` | Rebuild and start (CPU) |
+| `make serve-build-gpu` | Rebuild and start (GPU) |
+| `make serve-prod` | Start production (CPU) |
+| `make serve-prod-gpu` | Start production (GPU) |
+| `make build-prod` | Build production CPU image |
+| `make build-prod-gpu` | Build production GPU image |

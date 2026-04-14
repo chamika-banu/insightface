@@ -1,8 +1,11 @@
-# Production overrides for the InsightFace service.
+# Production overrides for the InsightFace service (CPU).
 # Merges with docker-compose.yml — only the differences are listed here.
 #
-# Usage:
+# Usage (CPU):
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up
+#
+# Usage (GPU):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.prod-gpu.yml up
 #
 # Set INSIGHTFACE_IMAGE to your registry image before running:
 #   export INSIGHTFACE_IMAGE=your-registry/insightface:latest
@@ -12,11 +15,4 @@ services:
     image: ${INSIGHTFACE_IMAGE:-insightface:latest}
     environment:
       - ENABLE_SWAGGER=false
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     command: python3 -m uvicorn main:app --host 0.0.0.0 --port 8002 --workers 1

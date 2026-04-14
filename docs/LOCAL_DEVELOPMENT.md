@@ -7,6 +7,7 @@
 | Docker Desktop | 4.x+ | Container runtime |
 | Docker Compose | v2 (bundled with Docker Desktop) | Service orchestration |
 | make | any | Shortcut commands |
+| NVIDIA Container Toolkit | latest | **GPU mode only** — not required for CPU |
 
 No local Python environment is required. Everything runs inside Docker.
 
@@ -18,13 +19,17 @@ This service is fully self-contained. All commands are run from inside the `insi
 
 ```
 insightface/
-├── main.py
-├── face_service.py
-├── schemas.py
-├── requirements.txt
-├── Dockerfile
-├── docker-compose.yml                       # Runs this service only
-├── Makefile                                 # Build and serve shortcuts
+├── main.py                                  # FastAPI app — routes, request handling, logging
+├── face_service.py                          # InsightFaceService — model loading and inference
+├── schemas.py                               # Pydantic request/response models
+├── requirements.txt                         # Python dependencies (onnxruntime installed by Dockerfile)
+├── Dockerfile                               # CPU image — python:3.11-slim, onnxruntime (CPU)
+├── Dockerfile.gpu                           # GPU image — nvidia/cuda base, onnxruntime-gpu
+├── docker-compose.yml                       # Base dev compose — CPU, builds Dockerfile
+├── docker-compose.gpu.yml                   # GPU overlay — switches to Dockerfile.gpu + GPU devices
+├── docker-compose.prod.yml                  # Prod override — registry image, CPU
+├── docker-compose.prod-gpu.yml              # GPU prod override — adds GPU device reservation
+├── Makefile                                 # Build and serve shortcuts (CPU + GPU targets)
 ├── insightface.postman_collection.json      # Postman collection for this service
 └── docs/
 ```
@@ -33,21 +38,31 @@ insightface/
 
 ## First-Time Build & Model Download
 
-The service uses a **pre-baked** model strategy. The **InsightFace buffalo_l** model pack (~330MB) is downloaded and integrated into the image during the Docker build process.
+The service uses a **pre-baked** model strategy. The **InsightFace buffalo_l** model pack (~330 MB) is downloaded and baked into the Docker image at build time.
 
-### **Build the image**:
+### CPU (default — works on any machine)
 
 ```bash
 make build
-# or
+# or:
 docker compose build
 ```
 
-> **Note**: This initial build will take longer than usual as it fetches the weight files. Once built, these weights are permanent within the image.
+### GPU (requires NVIDIA Container Toolkit on host)
+
+```bash
+make build-gpu
+# or:
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml build
+```
+
+> **Note:** The initial build downloads the buffalo_l model pack (~330 MB). Subsequent builds are fast due to layer caching. Both CPU and GPU images include the same model weights.
+
+---
 
 ## Running the Service
 
-### Start the service
+### CPU (default)
 
 ```bash
 make serve
@@ -55,14 +70,44 @@ make serve
 docker compose up
 ```
 
-The service is ready for inference almost immediately upon startup, as there is no runtime download requirement.
+### GPU
+
+```bash
+make serve-gpu
+# or:
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+```
 
 ### Rebuild and start (after changing requirements or Dockerfile)
 
 ```bash
+# CPU
 make serve-build
-# or:
-docker compose up --build
+
+# GPU
+make serve-build-gpu
+```
+
+The service is ready for inference almost immediately upon startup — there is no runtime model download.
+
+---
+
+## Verifying the Active Device
+
+Check the `/health` endpoint after startup to confirm which execution provider is active:
+
+```bash
+curl http://localhost:8002/health
+```
+
+**CPU response:**
+```json
+{"status": "ok", "model": "InsightFace buffalo_l (ArcFace w600k_r50)", "device": "CPUExecutionProvider"}
+```
+
+**GPU response:**
+```json
+{"status": "ok", "model": "InsightFace buffalo_l (ArcFace w600k_r50)", "device": "CUDAExecutionProvider"}
 ```
 
 ---
@@ -81,23 +126,19 @@ Set in `insightface/docker-compose.yml`:
 
 ### Swagger UI
 
-The recommended way to test endpoints locally is via the interactive Swagger documentation.
-
-1.  Open `http://localhost:8002/docs` in your browser.
-2.  Click **"Try it out"** on any endpoint.
-3.  Upload images and click **"Execute"**.
+Open `http://localhost:8002/docs` in your browser. Click **"Try it out"** on any endpoint.
 
 > Swagger is only available when `ENABLE_SWAGGER=true` (the default in `docker-compose.yml`).
 
 ### Postman
 
-Import `insightface/insightface.postman_collection.json` into Postman. The collection covers the endpoints with example responses.
+Import `insightface/insightface.postman_collection.json` into Postman.
 
 ---
 
 ## Reading the Logs
 
-Logs are written to stdout and appear in the `docker compose up` terminal output. The service uses standard Uvicorn logging.
+Logs are written to stdout and appear in the `docker compose up` terminal output.
 
 ### Diagnosing failures
 
@@ -118,6 +159,11 @@ Run from inside `insightface/`:
 
 | Target | Description |
 |---|---|
-| `make build` | Build the Docker image |
-| `make serve` | Start the service |
-| `make serve-build` | Rebuild and start |
+| `make build` | Build the CPU Docker image from `Dockerfile` |
+| `make build-gpu` | Build the GPU Docker image from `Dockerfile.gpu` |
+| `make serve` | Start the service (CPU) |
+| `make serve-gpu` | Start the service (GPU) |
+| `make serve-build` | Rebuild and start (CPU) |
+| `make serve-build-gpu` | Rebuild and start (GPU) |
+| `make serve-prod` | Start production mode (CPU) |
+| `make serve-prod-gpu` | Start production mode (GPU) |

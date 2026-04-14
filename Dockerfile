@@ -1,14 +1,10 @@
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+FROM python:3.11-slim
 
-# Avoid prompts from apt
 ENV DEBIAN_FRONTEND=noninteractive
 
-# System dependencies
-# We install python3.11 and pip manually as the CUDA image doesn't include them
+# System dependencies — cmake and build-essential are required to compile
+# InsightFace's C extensions (e.g. the face detection post-processing kernels).
 RUN apt-get update && apt-get install -y \
-    python3.11 \
-    python3-pip \
-    python3.11-dev \
     libgl1 \
     libglib2.0-0 \
     libgomp1 \
@@ -16,18 +12,21 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Set python3.11 as default python
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && \
-    update-alternatives --set python3 /usr/bin/python3.11
-
 WORKDIR /app
 
-# Install Python dependencies
-COPY requirements.txt .
-RUN python3 -m pip install --no-cache-dir --upgrade pip && \
-    python3 -m pip install --no-cache-dir -r requirements.txt
+# Install ONNX Runtime (CPU-only build).
+# onnxruntime is installed separately so each Dockerfile can pin the correct
+# variant — CPU here, onnxruntime-gpu in Dockerfile.gpu.
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir "onnxruntime>=1.19.2,<2.0"
 
-# Pre-download models to bake them into the image
+# Install remaining Python dependencies.
+# onnxruntime is already satisfied above; pip will skip it in requirements.txt.
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Pre-download the buffalo_l model pack (~330 MB) to bake it into the image.
+# This eliminates the runtime download delay and makes the service air-gap safe.
 RUN python3 -c "from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_l').prepare(ctx_id=0, det_size=(640, 640))"
 
 # Copy service and application files

@@ -1,0 +1,47 @@
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# System dependencies.
+# python3.11 and pip are installed manually because the CUDA image does not
+# include them. cmake and build-essential are required to compile InsightFace's
+# C extensions.
+RUN apt-get update && apt-get install -y \
+    python3.11 \
+    python3-pip \
+    python3.11-dev \
+    libgl1 \
+    libglib2.0-0 \
+    libgomp1 \
+    cmake \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set python3.11 as default python
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && \
+    update-alternatives --set python3 /usr/bin/python3.11 && \
+    update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
+
+WORKDIR /app
+
+# Install ONNX Runtime GPU build.
+# onnxruntime-gpu includes CUDAExecutionProvider and CPUExecutionProvider.
+# face_service.py auto-selects the best available provider at startup.
+RUN python3 -m pip install --no-cache-dir --upgrade pip && \
+    python3 -m pip install --no-cache-dir "onnxruntime-gpu>=1.19.2,<2.0"
+
+# Install remaining Python dependencies.
+# onnxruntime-gpu is already satisfied above; pip will skip it in requirements.txt.
+COPY requirements.txt .
+RUN python3 -m pip install --no-cache-dir -r requirements.txt
+
+# Pre-download the buffalo_l model pack (~330 MB) to bake it into the image.
+# This eliminates the runtime download delay and makes the service air-gap safe.
+RUN python3 -c "from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_l').prepare(ctx_id=0, det_size=(640, 640))"
+
+# Copy service and application files
+COPY face_service.py .
+COPY main.py .
+COPY schemas.py .
+
+CMD ["python3", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8002"]

@@ -5,7 +5,7 @@
 The InsightFace service is a stateless FastAPI microservice that accepts a selfie image and an ID document image, detects the face in each, and returns whether the two faces belong to the same person. It is always called by the NestJS backend after Step 1 (ID verification) has passed — the frontend never contacts it directly.
 
 - **Model:** InsightFace `buffalo_l` (RetinaFace detection + ArcFace `w600k_r50` recognition)
-- **Runtime:** Dynamic (GPU/CPU) via ONNX Runtime
+- **Runtime:** Dynamic (GPU/CPU) via ONNX Runtime — auto-detected at startup
 - **Port:** `8002`
 - **Framework:** FastAPI + uvicorn
 
@@ -28,7 +28,7 @@ NestJS Backend
     │    If failure → return rejection to frontend, stop
 ```
 
-The service is stateless. It does not store images, sessions, or embeddings. The ID image is held by NestJS in Redis and forwarded here on each request.
+The service is stateless. It does not store images, sessions, or embeddings.
 
 ---
 
@@ -39,18 +39,20 @@ insightface/
 ├── main.py                                  # FastAPI app — routes, request handling, logging
 ├── face_service.py                          # InsightFaceService — model loading and inference
 ├── schemas.py                               # Pydantic request/response models
-├── requirements.txt                         # Python dependencies
-├── Dockerfile                                # Container definition
-├── docker-compose.yml                       # Dev — build locally, --reload, ENABLE_SWAGGER=true
-├── docker-compose.prod.yml                  # Prod override — registry image, no reload, ENABLE_SWAGGER=false
-├── Makefile                                  # Build and serve shortcuts
+├── requirements.txt                         # Python dependencies (onnxruntime installed by Dockerfile)
+├── Dockerfile                               # CPU image — python:3.11-slim, onnxruntime (CPU)
+├── Dockerfile.gpu                           # GPU image — nvidia/cuda base, onnxruntime-gpu
+├── docker-compose.yml                       # Base dev compose — CPU-safe (no GPU device block)
+├── docker-compose.gpu.yml                   # GPU overlay — adds Dockerfile.gpu + GPU device access
+├── docker-compose.prod.yml                  # Prod override — registry image, CPU
+├── docker-compose.prod-gpu.yml              # GPU prod override — adds GPU device reservation
+├── Makefile                                 # Build and serve shortcuts (CPU + GPU targets)
 ├── insightface.postman_collection.json      # Postman collection for this service
 └── docs/
-    ├── IMPLEMENTATION.md                    
+    ├── IMPLEMENTATION.md
     ├── LOCAL_DEVELOPMENT.md
     └── DEPLOYMENT.md
 ```
-
 
 ---
 
@@ -59,7 +61,9 @@ insightface/
 ```
 # InsightFace & Inference
 insightface==0.7.3
-onnxruntime-gpu>=1.19.2,<2.0
+# onnxruntime is installed by each Dockerfile:
+#   Dockerfile     → onnxruntime      (CPU-only)
+#   Dockerfile.gpu → onnxruntime-gpu  (CUDAExecutionProvider + CPU fallback)
 
 # Scientific stack
 # numpy must stay <2.0.0 due to compatibility with ONNX Runtime and InsightFace 0.7.3
@@ -77,7 +81,22 @@ uvicorn>=0.31.1
 python-multipart>=0.0.9
 ```
 
-> `cmake` and `build-essential` are also required as system packages (installed in the Dockerfile) for compiling InsightFace's C extensions.
+> `cmake` and `build-essential` are also required as system packages (installed in both Dockerfiles) for compiling InsightFace's C extensions.
+
+---
+
+## CPU vs GPU Dockerfiles
+
+The service ships with two Dockerfiles that are identical in application code but differ in their base image and ONNX Runtime variant:
+
+| | `Dockerfile` (CPU) | `Dockerfile.gpu` (GPU) |
+|---|---|---|
+| Base image | `python:3.11-slim` | `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04` |
+| ONNX Runtime | `onnxruntime` (CPU-only build) | `onnxruntime-gpu` (CUDA + CPU providers) |
+| `docker-compose` | `docker-compose.yml` | `docker-compose.yml` + `docker-compose.gpu.yml` |
+| `make` target | `make build` / `make serve` | `make build-gpu` / `make serve-gpu` |
+
+`onnxruntime` is installed **before** `requirements.txt` in each Dockerfile. This means pip sees it as already satisfied and skips it when processing `requirements.txt`.
 
 ---
 
@@ -107,7 +126,7 @@ self.app = FaceAnalysis(name="buffalo_l", providers=providers)
 If you have stored face embeddings in a database (e.g., for "known users"):
 - **Existing embeddings will become invalid** if the model version changes.
 - A match score of `0.70` on version `0.7.3` might become `0.20` on a newer version.
-- **Migration Plan**: If you upgrade versions, you must re-process all source images to generate new embeddings for your database.
+- **Migration Plan**: If you upgrade versions, you must re-process all source images to generate new embeddings.
 
 ---
 
@@ -127,8 +146,13 @@ async def lifespan(app: FastAPI):
 
 ```python
 available_providers = ort.get_available_providers()
-# 1. CUDA (if available)
-# 2. CPU (fallback)
+# 1. CUDA (if available — only when using onnxruntime-gpu image on a GPU host)
+# 2. CPU (always available as fallback)
+providers = []
+if "CUDAExecutionProvider" in available_providers:
+    providers.append("CUDAExecutionProvider")
+providers.append("CPUExecutionProvider")
+
 self.app = FaceAnalysis(
     name="buffalo_l",
     providers=providers,
@@ -136,7 +160,7 @@ self.app = FaceAnalysis(
 self.app.prepare(ctx_id=0, det_size=(640, 640))
 ```
 
-The `buffalo_l` pack is **pre-baked** into the Docker image during the build process to ensure zero-delay startup and air-gap reliability.
+The `buffalo_l` pack is **pre-baked** into both Docker images during build to ensure zero-delay startup.
 
 **What `buffalo_l` contains:**
 
@@ -162,11 +186,9 @@ The `buffalo_l` pack is **pre-baked** into the Docker image during the build pro
 | Low confidence | `det_score < 0.80` | `face_not_detected_selfie` |
 | Face too small | `bbox_width < 80` or `bbox_height < 80` | `face_too_small_selfie` |
 
-If multiple faces are detected, the highest-confidence face is selected before the multiple-faces check. The multiple-faces check is applied after, and only on selfies (not on the ID image).
-
 ### Step 2 — ID Image Face Detection
 
-Same logic as Step 1 with `label="id"`, except the single-face rule is not enforced. Only the highest-confidence face is used.
+Same logic as Step 1 with `label="id"`, except the single-face rule is not enforced.
 
 ### Step 3 — Embedding Comparison
 
@@ -180,7 +202,7 @@ Both vectors are L2-normalised before the dot product because `insightface 0.7.3
 
 **Threshold:** `0.42`. Similarity ≥ 0.42 → `is_match = True`.
 
-**Confidence score:** `min(1.0, 0.5 + abs(similarity - 0.42) * 2)`. Reflects how far the similarity is from the decision boundary — high confidence means a clear match or clear non-match.
+**Confidence score:** `min(1.0, 0.5 + abs(similarity - 0.42) * 2)`.
 
 ---
 
@@ -188,15 +210,16 @@ Both vectors are L2-normalised before the dot product because `insightface 0.7.3
 
 ### GET /health
 
-Returns service readiness. Docker and NestJS both use this to gate traffic.
+Returns service readiness and the active ONNX execution provider.
 
-**Response — 200 OK**
+**Response — 200 OK (CPU)**
 ```json
-{
-  "status": "ok",
-  "model": "InsightFace buffalo_l (ArcFace w600k_r50)",
-  "device": "CUDAExecutionProvider"
-}
+{"status": "ok", "model": "InsightFace buffalo_l (ArcFace w600k_r50)", "device": "CPUExecutionProvider"}
+```
+
+**Response — 200 OK (GPU)**
+```json
+{"status": "ok", "model": "InsightFace buffalo_l (ArcFace w600k_r50)", "device": "CUDAExecutionProvider"}
 ```
 
 ---
@@ -207,9 +230,9 @@ Returns service readiness. Docker and NestJS both use this to gate traffic.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `session_id` | string | ✅ | UUID from NestJS — passed through for correlation |
-| `selfie_image` | file | ✅ | JPEG / PNG / WEBP selfie of the guardian |
-| `id_image` | file | ✅ | JPEG / PNG / WEBP ID document image (forwarded by NestJS from Redis) |
+| `session_id` | string | ✅ | UUID from NestJS |
+| `selfie_image` | file | ✅ | JPEG / PNG / WEBP selfie |
+| `id_image` | file | ✅ | JPEG / PNG / WEBP ID document image |
 
 **Response — Check Passed (HTTP 200)**
 ```json
@@ -229,24 +252,11 @@ Returns service readiness. Docker and NestJS both use this to gate traffic.
 
 ## Response Envelope
 
-Every endpoint returns the same three-field envelope. NestJS always reads `success` first.
-
 | State | `success` | `data` | `error` | HTTP |
 |---|---|---|---|---|
 | Model ran, check passed | `true` | populated | `null` | 200 |
 | Model ran, check failed | `false` | populated | populated | 200 |
 | System error / crash | `false` | `null` | populated | 500 |
-
----
-
-## Logging
-
-The service uses standard Uvicorn logging for request tracing. Custom internal logs are kept to a minimum to ensure high signal-to-noise.
-
-| Event | Level | Description |
-|---|---|---|
-| Request Trace | INFO | Standard Uvicorn request log (Method, Path, Status) |
-| `SYSTEM ERROR` | ERROR | High-level exception details for inference failures |
 
 ---
 
@@ -290,8 +300,6 @@ MIN_FACE_SIZE = 80             # Minimum bounding box dimension in pixels
 MIN_DETECTION_CONFIDENCE = 0.80
 ```
 
-These should be tuned based on real-world data before production deployment.
-
 ---
 
 ## Swagger UI
@@ -299,4 +307,3 @@ These should be tuned based on real-world data before production deployment.
 Available at `http://localhost:8002/docs` when `ENABLE_SWAGGER=true`.
 
 ReDoc and the raw OpenAPI JSON schema (`/openapi.json`) are permanently disabled.
-
