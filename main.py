@@ -6,8 +6,22 @@ import shutil
 import tempfile
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
+import httpx
+
+async def download_image(url: str, suffix: str) -> str:
+    """Helper to download an image from a URL into an ephemeral file."""
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url, timeout=15.0)
+                response.raise_for_status()
+                tmp.write(response.content)
+            return tmp.name
+        except Exception as e:
+            os.unlink(tmp.name)
+            raise HTTPException(status_code=400, detail=f"Failed to fetch image from URL: {e}")
 
 from face_service import InsightFaceService
 from schemas import (
@@ -68,19 +82,31 @@ def health():
 )
 async def verify_face(
     session_id: str = Form(...),
-    selfie_image: UploadFile = File(...),
-    id_image: UploadFile = File(...),
+    selfie_image: UploadFile | None = File(None),
+    id_image: UploadFile | None = File(None),
+    selfie_image_url: str | None = Form(None),
+    id_image_url: str | None = Form(None),
 ):    
-    selfie_suffix = os.path.splitext(selfie_image.filename or "selfie.jpg")[1] or ".jpg"
-    id_suffix = os.path.splitext(id_image.filename or "id.jpg")[1] or ".jpg"
+    if not selfie_image and not selfie_image_url:
+        raise HTTPException(status_code=400, detail="Either selfie_image or selfie_image_url must be provided.")
+    if not id_image and not id_image_url:
+        raise HTTPException(status_code=400, detail="Either id_image or id_image_url must be provided.")
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=selfie_suffix) as stmp:
-        shutil.copyfileobj(selfie_image.file, stmp)
-        selfie_path = stmp.name
+    if selfie_image:
+        selfie_suffix = os.path.splitext(selfie_image.filename or "selfie.jpg")[1] or ".jpg"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=selfie_suffix) as stmp:
+            shutil.copyfileobj(selfie_image.file, stmp)
+            selfie_path = stmp.name
+    else:
+        selfie_path = await download_image(selfie_image_url, ".jpg")
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=id_suffix) as itmp:
-        shutil.copyfileobj(id_image.file, itmp)
-        id_path = itmp.name
+    if id_image:
+        id_suffix = os.path.splitext(id_image.filename or "id.jpg")[1] or ".jpg"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=id_suffix) as itmp:
+            shutil.copyfileobj(id_image.file, itmp)
+            id_path = itmp.name
+    else:
+        id_path = await download_image(id_image_url, ".jpg")
 
     try:
         result = service.verify_faces(selfie_path, id_path)

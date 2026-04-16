@@ -19,7 +19,7 @@ NestJS Backend
     │    (After Step 1 passes — id_image retrieved from Redis)
     │
     ├──► POST http://insightface:8002/verify/face
-    │         multipart/form-data: session_id, selfie_image, id_image
+    │         multipart/form-data: session_id, {selfie_image | selfie_image_url}, {id_image | id_image_url}
     │
     │◄── FaceVerificationResponse
     │         { success, data, error }
@@ -79,6 +79,7 @@ pillow-heif>=0.16.0
 fastapi>=0.111.0
 uvicorn>=0.31.1
 python-multipart>=0.0.9
+httpx>=0.27.0
 ```
 
 > `cmake` and `build-essential` are also required as system packages (installed in both Dockerfiles) for compiling InsightFace's C extensions.
@@ -231,8 +232,12 @@ Returns service readiness and the active ONNX execution provider.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `session_id` | string | ✅ | UUID from NestJS |
-| `selfie_image` | file | ✅ | JPEG / PNG / WEBP selfie |
-| `id_image` | file | ✅ | JPEG / PNG / WEBP ID document image |
+| `selfie_image` | file | | (Optional) JPEG / PNG / WEBP selfie |
+| `id_image` | file | | (Optional) JPEG / PNG / WEBP ID document image |
+| `selfie_image_url` | string | | (Optional) Direct URL to the selfie image |
+| `id_image_url` | string | | (Optional) Direct URL to the ID document image |
+
+*Note: You must provide either a file upload or a URL for both the selfie and ID.*
 
 **Response — Check Passed (HTTP 200)**
 ```json

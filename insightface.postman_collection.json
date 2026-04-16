@@ -45,13 +45,27 @@
               "key": "selfie_image",
               "type": "file",
               "src": "",
-              "description": "JPEG / PNG / WEBP selfie image of the guardian"
+              "description": "(Optional) JPEG / PNG / WEBP selfie image",
+              "disabled": true
             },
             {
               "key": "id_image",
               "type": "file",
               "src": "",
-              "description": "JPEG / PNG / WEBP ID document image (forwarded by NestJS from Redis)"
+              "description": "(Optional) JPEG / PNG / WEBP ID document image",
+              "disabled": true
+            },
+            {
+              "key": "selfie_image_url",
+              "value": "https://example.com/selfie.jpg",
+              "type": "text",
+              "description": "(Optional) Direct URL to the selfie image"
+            },
+            {
+              "key": "id_image_url",
+              "value": "https://example.com/id.jpg",
+              "type": "text",
+              "description": "(Optional) Direct URL to the ID document image"
             }
           ]
         },

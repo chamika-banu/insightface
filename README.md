@@ -53,8 +53,12 @@ Main endpoint for face verification. Accepts a Form-data file upload.
 | Parameter | Type | Description |
 | :--- | :--- | :--- |
 | `session_id` | string | Unique identifier for tracking the request. |
-| `selfie_image` | file | Live selfie image (JPEG/PNG/HEIF). |
-| `id_image` | file | ID document photo (JPEG/PNG/HEIF). |
+| `selfie_image` | file | (Optional) Live selfie image (JPEG/PNG/HEIF). |
+| `id_image` | file | (Optional) ID document photo (JPEG/PNG/HEIF). |
+| `selfie_image_url` | string | (Optional) Direct URL to the selfie image. |
+| `id_image_url` | string | (Optional) Direct URL to the ID document image. |
+
+*Note: You must provide either a file upload or a URL for both the selfie and ID.*
 
 **Example Response:**
 ```json
